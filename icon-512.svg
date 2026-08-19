@@ -1,1 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect x="8" y="8" width="496" height="496" rx="102" fill="#30207d"/><text x="256.0" y="317.44" text-anchor="middle" font-family="Arial,sans-serif" font-size="105" font-weight="900" fill="#ffd83d">W</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<rect x="16.00" y="16.00" width="480.00" height="480.00" rx="102.00" fill="#30207d"/>
+<g transform="rotate(-16 184.00 240.00)">
+  <rect x="80.00" y="92.00" width="208.00" height="296.00" rx="32.00" fill="#ffffff" stroke="#ffd83d" stroke-width="8.00"/>
+  <circle cx="132.00" cy="156.00" r="22.00" fill="#30207d"/>
+</g>
+<g transform="rotate(14 328.00 240.00)">
+  <rect x="224.00" y="92.00" width="208.00" height="296.00" rx="32.00" fill="#ffffff" stroke="#ffd83d" stroke-width="8.00"/>
+  <polygon points="380.00,122.00 351.76,173.82 408.24,173.82" fill="#ee3c78"/>
+</g>
+<rect x="152.00" y="108.00" width="208.00" height="296.00" rx="28.80" fill="#ffffff" stroke="#30207d" stroke-width="10.00"/>
+<polygon points="256.00,176.00 272.46,221.35 320.67,222.99 282.63,252.65 295.97,299.01 256.00,272.00 216.03,299.01 229.37,252.65 191.33,222.99 239.54,221.35" fill="#ee3c78" stroke="#30207d" stroke-width="4.00" stroke-linejoin="round"/>
+<text x="256.00" y="376.00" text-anchor="middle" font-family="Arial,sans-serif" font-size="36.00" font-weight="900" fill="#30207d">WHOT</text>
+</svg>

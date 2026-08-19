@@ -1,0 +1,13 @@
+{
+  "name": "wywhot",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "npx serve . -l 3000",
+    "start": "npx serve . -l 3000"
+  },
+  "dependencies": {
+    "serve": "^14.2.4",
+    "@supabase/supabase-js": "^2.57.0"
+  }
+}

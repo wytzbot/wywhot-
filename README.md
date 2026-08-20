@@ -72,7 +72,30 @@ None of these are bugs — they're scope choices, listed so you know exactly wha
 ### Local testing
 `npm run dev` (`npx serve .`) serves static files only — it runs neither `/api/config.js` nor the Edge Function. Use `vercel dev` (with `.env.local` from `.env.example`) for the API route, and `supabase functions serve game-engine` for the engine, or just test against a deployed Vercel preview + deployed Edge Function.
 
-## Important
+## v4.5 — "Failed to send a request to the Edge Function" + My Rooms, room stats, room size, ambient music
+
+### Fixing the Edge Function error
+This exact message is supabase-js's generic text for "the browser's request never got an HTTP response back" — not a rejected request, a request that never landed. In order of likelihood:
+
+1. **`game-engine` was never actually deployed.** Uploading this zip to Vercel does NOT deploy it — Vercel only serves the static frontend and `/api/*.js` files. The Edge Function lives on Supabase's own infrastructure and needs its own deploy step. The normal way is the Supabase CLI (`supabase functions deploy game-engine`), which needs a terminal — **if you're working from your phone with no CLI access, use the Supabase Dashboard instead**: Project → Edge Functions → Create a new function → name it exactly `game-engine` → paste the full contents of `supabase/functions/game-engine/index.ts` into the inline editor → Deploy. That's a phone-friendly path that skips the CLI entirely.
+2. Check the function has its 3 secrets set (Edge Functions → game-engine → Secrets): `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`. Missing secrets would actually show a *different* error (a 500 with a message), so this is less likely to be today's exact symptom, but worth confirming while you're in there.
+3. Anonymous Sign-ins must be on (Authentication → Providers) — without it `DB.ensureUser()` fails earlier, before it would even reach the function, so this is also a less likely match for this specific error, but check it's on regardless.
+
+After deploying via the dashboard, try Start Game again — no redeploy of the frontend needed for this fix.
+
+### My Rooms
+The app now remembers up to 8 rooms you've created or joined (per device, in `localStorage` — not synced across devices/browsers). They show on the home screen with a tap-to-rejoin button; rejoining still goes through the normal join checks (room still exists, not full), it's just a shortcut past typing the code again.
+
+### Per-room game stats (Pro-gated)
+Each room now tracks `games_played` and a per-player win count (`room_stats` table, written only by `game-engine` when a game finishes). Shown under each room in My Rooms as e.g. "10 games played · Wyte: 3 wins, Bola: 2 wins" — **gated client-side to Pro**, the same way Virtual Bank and unlimited hints already are in this app. Note this is a UI gate, not an RLS lock (like those other two features) — the data itself isn't sensitive (game history, not money), so that tradeoff matches the rest of the app rather than introducing a new security model.
+
+### Host-selectable room size (2 or 4 players)
+A toggle on the home screen before creating a room; stored as `rooms.max_players`. Previously the 4-player cap was enforced *only* client-side (nothing stopped a modified client from joining a "full" room) — this also adds a real Postgres trigger (`enforce_room_capacity`) rejecting inserts past the cap, closing that gap for both room sizes.
+
+### Ambient background music
+Settings → "Background music" — a procedurally generated soft pad (paired detuned sine oscillators through a lowpass filter, cycling through six notes with slow fades), not an audio file. No licensing/hosting needed, and it's small. Browsers block audio until a user gesture; checking the box counts as one, and if a session reopens with it already enabled, it resumes on your first tap/click since mobile browsers won't auto-resume a suspended audio context either.
+
+
 The supplied Adsterra 300x250 unit is used as a timed sponsor experience. It is not a provider-verified rewarded-ad callback. Do not treat a normal banner impression as a verified ad completion.
 
 Flutterwave secrets remain server-side. Before production, deploy the v4 charge initialization and webhook/verification endpoints and add real Vercel environment variables. The browser must never contain FLW_CLIENT_SECRET.

@@ -7,10 +7,33 @@ create table if not exists rooms (
   code text unique not null,
   host_id uuid not null,
   status text not null default 'lobby',
+  max_players integer not null default 4 check (max_players in (2,4)),
   rules jsonb not null default '{}'::jsonb,
   virtual_bank_enabled boolean not null default false,
   virtual_currency text check (virtual_currency in ('NGN','USD','EUR')),
   created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table rooms add column if not exists max_players integer not null default 4;
+do $$
+begin
+  alter table rooms add constraint rooms_max_players_check check (max_players in (2,4));
+exception when duplicate_object then null;
+end $$;
+
+-- Per-room game history: how many games finished in this room, and a
+-- per-player win tally. Keyed by player_id so a display-name change
+-- doesn't fragment history; {name, wins} lets the UI show names
+-- without a join. Written only by the game-engine function (service
+-- role) when a game finishes. Reading it is gated to Pro users
+-- client-side (like Virtual Bank/unlimited hints already are in this
+-- app) rather than by RLS — it's game history, not money or
+-- entitlement data, so the stakes for a client bypassing the UI gate
+-- are low, same tradeoff as the rest of the app's Pro features.
+create table if not exists room_stats (
+  room_id uuid primary key references rooms(id) on delete cascade,
+  games_played integer not null default 0,
+  wins jsonb not null default '{}'::jsonb,
   updated_at timestamptz not null default now()
 );
 
@@ -126,6 +149,25 @@ begin
 end;
 $$;
 
+-- Player-count cap was previously enforced only client-side (the app
+-- checked `existing.length >= MAX_PLAYERS` before inserting) — nothing
+-- stopped a modified client from inserting past the room's max_players
+-- directly. This closes that gap at the database level.
+create or replace function public.enforce_room_capacity()
+returns trigger language plpgsql as $$
+declare cap integer; current_count integer;
+begin
+  select max_players into cap from public.rooms where id = new.room_id;
+  select count(*) into current_count from public.players where room_id = new.room_id;
+  if cap is not null and current_count >= cap then
+    raise exception 'Room is full (max % players)', cap;
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists players_enforce_capacity on players;
+create trigger players_enforce_capacity before insert on players for each row execute function public.enforce_room_capacity();
+
 drop trigger if exists rooms_set_updated_at on rooms;
 create trigger rooms_set_updated_at before update on rooms for each row execute function public.set_updated_at();
 drop trigger if exists players_set_updated_at on players;
@@ -148,6 +190,7 @@ alter table players enable row level security;
 alter table game_states enable row level security;
 alter table game_decks enable row level security;
 alter table player_hands enable row level security;
+alter table room_stats enable row level security;
 alter table pro_orders enable row level security;
 alter table pro_entitlements enable row level security;
 alter table payment_events enable row level security;
@@ -176,6 +219,10 @@ create policy game_states_select_all on game_states for select using (true);
 
 drop policy if exists player_hands_select_own on player_hands;
 create policy player_hands_select_own on player_hands for select using (player_id = auth.uid());
+
+drop policy if exists room_stats_select_all on room_stats;
+create policy room_stats_select_all on room_stats for select using (true);
+-- No insert/update policy: only the game-engine function (service role) writes this.
 
 -- No browser policies on game_decks, pro_orders, pro_entitlements,
 -- payment_events, or virtual_bankrolls. Service-role/server code only.

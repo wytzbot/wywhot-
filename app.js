@@ -25,7 +25,28 @@ let gameState = null;      // last row from game_states
 let myHand = [];           // this player's private hand
 let pendingWhotIndex = null;
 let hints = 3, isPro = false;
-let prefs = { sfx: true, cardAudio: true, voice: true };
+let prefs = { sfx: true, cardAudio: true, voice: true, music: localStorage.getItem("wywhot_music") === "1" };
+let selectedMaxPlayers = 4;
+
+// ---------- My Rooms (local, per-device) ----------
+// Just a convenience list so a minimized/reopened app doesn't force a
+// fresh Create/Join — it does NOT grant access to anything the DB
+// wouldn't already allow; rejoining still goes through join()'s normal
+// checks (room exists, not full, etc).
+const MY_ROOMS_KEY = "wywhot_my_rooms";
+function getMyRooms() {
+  try { return JSON.parse(localStorage.getItem(MY_ROOMS_KEY) || "[]"); } catch (e) { return []; }
+}
+function saveMyRoom(code, roomId) {
+  let rooms = getMyRooms().filter(r => r.code !== code);
+  rooms.unshift({ code, roomId, lastVisited: Date.now() });
+  rooms = rooms.slice(0, 8);
+  localStorage.setItem(MY_ROOMS_KEY, JSON.stringify(rooms));
+}
+function forgetMyRoom(code) {
+  localStorage.setItem(MY_ROOMS_KEY, JSON.stringify(getMyRooms().filter(r => r.code !== code)));
+  home();
+}
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -48,12 +69,18 @@ async function teardownChannels() {
 function home() {
   teardownChannels();
   roomRow = null; players = []; gameState = null; myHand = [];
+  const myRooms = getMyRooms();
   A.innerHTML = `<main class="shell"><section class="hero">
     <img class="logo" src="logo.svg" alt="WYWHOT">
     <p class="tag">PLAY. TALK. WIN.</p>
     <div class="fan"><i>20</i><i>WHOT</i><i>5</i></div>
     <section class="panel">
       <input id="name" placeholder="Your name" value="${esc(name)}">
+      <p class="muted small">Room size</p>
+      <div class="row" id="sizeToggle">
+        <button class="secondary ${selectedMaxPlayers === 2 ? "active" : ""}" onclick="setMaxPlayers(2)">2 Players</button>
+        <button class="secondary ${selectedMaxPlayers === 4 ? "active" : ""}" onclick="setMaxPlayers(4)">4 Players</button>
+      </div>
       <div class="row">
         <button id="createBtn" onclick="create()">Create Room</button>
         <input id="room" placeholder="Room code">
@@ -67,7 +94,54 @@ function home() {
         <a onclick="bank()">Virtual Bank</a>
       </nav>
     </section>
+    ${myRooms.length ? `<section class="panel wide" id="myRoomsPanel"><h2>My Rooms</h2><div id="myRoomsList">Loading…</div></section>` : ""}
   </section></main>`;
+  if (myRooms.length) renderMyRooms(myRooms);
+}
+
+function setMaxPlayers(n) {
+  selectedMaxPlayers = n;
+  document.querySelectorAll("#sizeToggle button").forEach(b => b.classList.remove("active"));
+  const btn = [...document.querySelectorAll("#sizeToggle button")].find(b => b.textContent.startsWith(String(n)));
+  if (btn) btn.classList.add("active");
+}
+
+async function renderMyRooms(myRooms) {
+  const el = document.getElementById("myRoomsList");
+  if (!el) return;
+  try {
+    const sb = await DB.getSupabase();
+    const codes = myRooms.map(r => r.code);
+    const { data: rows } = await sb.from("rooms").select("id,code,status,max_players").in("code", codes);
+    const byCode = Object.fromEntries((rows || []).map(r => [r.code, r]));
+    let statsByRoomId = {};
+    if (isPro && rows?.length) {
+      const { data: statRows } = await sb.from("room_stats").select("*").in("room_id", rows.map(r => r.id));
+      statsByRoomId = Object.fromEntries((statRows || []).map(r => [r.room_id, r]));
+    }
+    el.innerHTML = myRooms.map(r => {
+      const live = byCode[r.code];
+      if (!live) return `<div class="myroom gone"><span>${esc(r.code)} — no longer exists</span><button class="secondary" onclick="forgetMyRoom('${r.code}')">Remove</button></div>`;
+      const stat = statsByRoomId[live.id];
+      const statLine = isPro
+        ? (stat && stat.games_played
+            ? `<p class="muted small">${stat.games_played} games played · ${Object.values(stat.wins).map(w => `${esc(w.name)}: ${w.wins} win${w.wins === 1 ? "" : "s"}`).join(", ")}</p>`
+            : `<p class="muted small">No games finished here yet.</p>`)
+        : `<p class="muted small">🔒 Game stats are a Pro feature.</p>`;
+      return `<div class="myroom">
+        <button onclick="rejoinRoom('${r.code}')"><b>${esc(r.code)}</b> <span class="muted small">${live.status === "active" ? "in progress" : live.status === "finished" ? "finished" : "lobby"} · ${live.max_players}P</span></button>
+        ${statLine}
+      </div>`;
+    }).join("");
+  } catch (e) {
+    el.innerHTML = `<p class="muted small">Couldn't load your rooms right now.</p>`;
+  }
+}
+
+async function rejoinRoom(code) {
+  const roomInput = document.getElementById("room");
+  if (roomInput) roomInput.value = code;
+  await join();
 }
 
 function busy(btnId, isBusy, label) {
@@ -101,11 +175,12 @@ async function create() {
     let inserted = null, lastErr = null;
     for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
       const code = Math.random().toString(36).slice(2, 7).toUpperCase();
-      const { data, error } = await sb.from("rooms").insert({ code, host_id: playerId, status: "lobby" }).select().single();
+      const { data, error } = await sb.from("rooms").insert({ code, host_id: playerId, status: "lobby", max_players: selectedMaxPlayers }).select().single();
       if (!error) inserted = data; else lastErr = error;
     }
     if (!inserted) throw lastErr || new Error("Could not create a room.");
     roomRow = inserted;
+    saveMyRoom(roomRow.code, roomRow.id);
 
     const { error: pErr } = await sb.from("players").insert({
       id: playerId, room_id: roomRow.id, name, avatar: AVATARS[0], connected: true, is_host: true
@@ -140,10 +215,11 @@ async function join() {
     if (cErr) throw cErr;
 
     if (existing.some(p => p.id === playerId)) {
-      roomRow = room; await enterLobby(); return; // rejoining after a refresh
+      roomRow = room; saveMyRoom(room.code, room.id); await enterLobby(); return; // rejoining after a refresh
     }
     if (room.status !== "lobby") { showHomeErr("That game has already started."); return; }
-    if (existing.length >= MAX_PLAYERS) { showHomeErr("That room is full."); return; }
+    const cap = room.max_players || MAX_PLAYERS;
+    if (existing.length >= cap) { showHomeErr(`That room is full (max ${cap} players).`); return; }
 
     const takenAvatars = new Set(existing.map(p => p.avatar));
     const avatar = AVATARS.find(a => !takenAvatars.has(a)) || AVATARS[existing.length % AVATARS.length];
@@ -154,6 +230,7 @@ async function join() {
     if (pErr) throw pErr;
 
     roomRow = room;
+    saveMyRoom(room.code, room.id);
     await enterLobby();
   } catch (err) {
     showHomeErr(friendlyError(err, "Couldn't join that room."));
@@ -203,7 +280,7 @@ function lobby() {
     <div class="players" id="players"></div>
     <div class="rules"><b>Rules</b>
       <p>Pick 2 · General Market · Hold On · Skip · WHOT wildcard</p>
-      <p>Hints: ${hints} · Voice: ${prefs.voice ? "On" : "Off"}</p>
+      <p>Hints: ${hints} · Voice: ${prefs.voice ? "On" : "Off"} · Room size: ${roomRow.max_players || 4}</p>
     </div>
     ${isHost()
       ? `<button id="startBtn" onclick="startGame()">Start Game</button><p class="muted small">Share the room code with friends to have them join.</p>`
@@ -215,8 +292,9 @@ function lobby() {
 function renderPlayers() {
   const el = document.getElementById("players");
   if (!el) return;
+  const cap = (roomRow && roomRow.max_players) || MAX_PLAYERS;
   const rows = players.map(p => `<div><img src="${p.avatar}.svg" alt=""> ${esc(p.name)}${p.is_host ? "<small>HOST</small>" : ""}</div>`);
-  for (let i = players.length; i < MAX_PLAYERS; i++) rows.push(`<div class="muted"><img src="avatar-panda.svg" style="opacity:.3" alt=""> Waiting…</div>`);
+  for (let i = players.length; i < cap; i++) rows.push(`<div class="muted"><img src="avatar-panda.svg" style="opacity:.3" alt=""> Waiting…</div>`);
   el.innerHTML = rows.join("");
   const startBtn = document.getElementById("startBtn");
   if (startBtn) startBtn.disabled = players.length < 2;
@@ -616,6 +694,7 @@ function settings() {
     <label><input type="checkbox" id="sfx" ${prefs.sfx ? "checked" : ""} onchange="setPref('sfx', this.checked)"> Sound effects</label>
     <label><input type="checkbox" id="cardAudio" ${prefs.cardAudio ? "checked" : ""} onchange="setPref('cardAudio', this.checked)"> Special-card audio</label>
     <label><input type="checkbox" id="voice" ${prefs.voice ? "checked" : ""} onchange="setPref('voice', this.checked)"> Voice chat</label>
+    <label><input type="checkbox" id="music" ${prefs.music ? "checked" : ""} onchange="setPref('music', this.checked)"> Background music (ambient pad)</label>
     <p class="muted small" id="prefStatus">Preferences apply for this session.</p>
     <button onclick="home()">Home</button>
   </section></main>`;
@@ -625,6 +704,63 @@ function setPref(key, val) {
   prefs[key] = val;
   const s = document.getElementById("prefStatus");
   if (s) s.textContent = `Saved: ${key} ${val ? "on" : "off"} for this session.`;
+  if (key === "music") {
+    localStorage.setItem("wywhot_music", val ? "1" : "0");
+    if (val) startPad(); else stopPad();
+  }
+}
+
+// ---------- Ambient background pad ----------
+// Procedurally generated (no audio file to host/license): soft
+// detuned sine pairs through a lowpass filter, one gentle note fading
+// in/out every few seconds, cycling through a small pentatonic-ish
+// set so it doesn't feel static. Must start from a user gesture
+// (checking the box) — browsers block audio autoplay otherwise.
+let padCtx = null, padMasterGain = null, padTimer = null;
+const PAD_NOTES = [130.81, 146.83, 164.81, 196.00, 220.00, 246.94]; // C3 D3 E3 G3 A3 B3
+
+function startPad() {
+  if (padCtx) return;
+  try {
+    padCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (padCtx.state === "suspended") {
+      const resume = () => { padCtx && padCtx.resume(); document.removeEventListener("click", resume); document.removeEventListener("touchstart", resume); };
+      document.addEventListener("click", resume, { once: true });
+      document.addEventListener("touchstart", resume, { once: true });
+    }
+    const filter = padCtx.createBiquadFilter();
+    filter.type = "lowpass"; filter.frequency.value = 900;
+    padMasterGain = padCtx.createGain();
+    padMasterGain.gain.value = 0.22;
+    filter.connect(padMasterGain); padMasterGain.connect(padCtx.destination);
+    padMasterGain._filter = filter; // stash for note scheduling below
+    scheduleNextPadNote();
+  } catch (e) { /* Web Audio unavailable — fail quietly, it's just ambience */ }
+}
+
+function scheduleNextPadNote() {
+  if (!padCtx) return;
+  const freq = PAD_NOTES[Math.floor(Math.random() * PAD_NOTES.length)];
+  const now = padCtx.currentTime;
+  const noteGain = padCtx.createGain();
+  noteGain.gain.value = 0;
+  noteGain.connect(padMasterGain._filter);
+  const osc1 = padCtx.createOscillator(); osc1.type = "sine"; osc1.frequency.value = freq;
+  const osc2 = padCtx.createOscillator(); osc2.type = "sine"; osc2.frequency.value = freq * 1.006; // slight detune = warmth
+  osc1.connect(noteGain); osc2.connect(noteGain);
+  noteGain.gain.linearRampToValueAtTime(0.5, now + 4);   // slow fade in
+  noteGain.gain.linearRampToValueAtTime(0, now + 13);    // slow fade out
+  osc1.start(now); osc2.start(now);
+  osc1.stop(now + 14); osc2.stop(now + 14);
+  padTimer = setTimeout(scheduleNextPadNote, 5000 + Math.random() * 4000);
+}
+
+function stopPad() {
+  if (padTimer) { clearTimeout(padTimer); padTimer = null; }
+  if (padMasterGain && padCtx) padMasterGain.gain.linearRampToValueAtTime(0, padCtx.currentTime + 1.5);
+  const ctxToClose = padCtx;
+  padCtx = null; padMasterGain = null;
+  if (ctxToClose) setTimeout(() => ctxToClose.close().catch(() => {}), 1700);
 }
 
 (async function boot(){
@@ -632,5 +768,6 @@ function setPref(key, val) {
   if(params.get("payment")==="return") return paymentReturn();
   const email=localStorage.getItem("wywhot_pro_email");
   if(email){ try{ const r=await fetch("/api/flutterwave/pro-status?email="+encodeURIComponent(email)); const b=await r.json(); if(b.active) isPro=true; }catch(e){} }
+  if (prefs.music) startPad();
   home();
 })();
